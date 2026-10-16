@@ -39,22 +39,40 @@ m = Image.fromarray((erase * 255).astype(np.uint8)).filter(ImageFilter.GaussianB
 a = np.asarray(m, np.float32)[..., None] / 255
 clean_bg = photo * (1 - a) + photo2 * a
 
-# --- 2. Logotipo en alta resolución: máscaras de PUB (azul) y MAX (rojo) ---
-L = np.asarray(Image.open(logo_src).convert("RGB")).astype(np.int16)
-r, g, b = L[..., 0], L[..., 1], L[..., 2]
-navy = (b > r + 40) & (b > 100)
-red = (r > 150) & (g < 120) & (b < 120)
-ys, xs = np.nonzero(navy | red)
-y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
-# altura de mayúscula de PUB: filas con mucho azul
-rows = navy.sum(axis=1)
-cap = np.nonzero(rows > rows.max() * 0.35)[0]
-cap_top, cap_base = cap.min(), cap.max()
+# --- 2. Letras: logotipo (PNG) o texto en bloque ("text:PUBLIMAX") ---
+if logo_src.startswith("text:"):
+    from PIL import ImageDraw, ImageFont
+    text = logo_src[5:]
+    font = ImageFont.truetype("/usr/share/fonts/opentype/inter/InterDisplay-ExtraBold.otf", 600)
+    canvas = Image.new("L", (6000, 1000), 0)
+    d = ImageDraw.Draw(canvas)
+    x = 100
+    for ch in text:  # cada letra es una pieza separada: se agrega espacio entre letras
+        d.text((x, 100), ch, font=font, fill=255)
+        x += font.getlength(ch) + 55
+    m = np.asarray(canvas) > 127
+    navy, red = m, np.zeros_like(m)
+    ys, xs = np.nonzero(m)
+    y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
+    cap_top, cap_base = y0, y1
+    print("proporción del texto", (x1 - x0) / (y1 - y0))
+else:
+    L = np.asarray(Image.open(logo_src).convert("RGB")).astype(np.int16)
+    r, g, b = L[..., 0], L[..., 1], L[..., 2]
+    navy = (b > r + 40) & (b > 100)
+    red = (r > 150) & (g < 120) & (b < 120)
+    ys, xs = np.nonzero(navy | red)
+    y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
+    rows = navy.sum(axis=1)
+    cap = np.nonzero(rows > rows.max() * 0.35)[0]
+    cap_top, cap_base = cap.min(), cap.max()
 
 # --- 3. Homografía: logotipo plano -> pared en perspectiva ---
-def top(x): return 548 - 0.19 * (x - 870)
+import os
+FRAC = float(os.environ.get("FRAC", "1"))
 def bot(x): return 800 - 0.105 * (x - 960)
-XL, XR = 175, 1440
+def top(x): return bot(x) + FRAC * ((548 - 0.19 * (x - 870)) - bot(x))
+XL, XR = int(os.environ.get("XL", "175")), int(os.environ.get("XR", "1440"))
 dst = [(XL, top(XL)), (XR, top(XR)), (XR, bot(XR)), (XL, bot(XL))]
 srcp = [(x0, cap_top), (x1, cap_top), (x1, cap_base), (x0, cap_base)]
 
@@ -102,7 +120,7 @@ ring = np.asarray(bimg.filter(ImageFilter.MaxFilter(9)), np.float32) / 255
 core = np.asarray(Image.fromarray((ring * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(4)), np.float32) / 255
 soft = np.asarray(bimg.filter(ImageFilter.MaxFilter(15)).filter(ImageFilter.GaussianBlur(16)), np.float32) / 255
 wide = np.asarray(bimg.filter(ImageFilter.GaussianBlur(60)), np.float32) / 255
-glow = np.clip(core * 1.7 + soft * 0.95 + wide * 0.4, 0, 1.6)
+glow = np.clip(core * 2.1 + soft * 1.1 + wide * 0.45, 0, 1.8)
 glow = np.where(back > 0.5, glow * 0.25, glow)  # dentro de la silueta la luz queda tapada
 light = np.array([248, 252, 255], np.float32)
 
@@ -128,5 +146,8 @@ def render(face_colors, name):
     res = Image.fromarray(np.clip(out, 0, 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(0.6))
     res.save(f"{out_prefix}-{name}.jpg", quality=90)
 
-render([(f_navy, (46, 50, 118)), (f_red, (190, 42, 40))], "colores")
-render([(face, (112, 106, 98))], "plata")
+if logo_src.startswith("text:"):
+    render([(face, (112, 106, 98))], "bloque")
+else:
+    render([(f_navy, (46, 50, 118)), (f_red, (190, 42, 40))], "colores")
+    render([(face, (112, 106, 98))], "plata")
